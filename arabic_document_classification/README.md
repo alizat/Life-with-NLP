@@ -8,7 +8,7 @@ I generated static embeddings with an NLP model, [AraEuroBert-210M_distilled](ht
 - XGBoost
 - Fine-tuned the above-mentioned SentenceTransformer model (model2vec-style)  -->  still needs a fix
 
-I also fine-tuned the Hugging Face Transformer model, [AraEuroBert-210M](https://huggingface.co/Omartificial-Intelligence-Space/AraEuroBert-210M, which is the original model from which above-mentioned one was distilled. 
+I also fine-tuned the Hugging Face Transformer model, [AraEuroBert-210M](https://huggingface.co/Omartificial-Intelligence-Space/AraEuroBert-210M), which is the original model from which above-mentioned one was distilled. 
 
 ## Future Work
 Here in this README, I will add a report of the classification results of the different models as soon as I can! Stay tuned.
