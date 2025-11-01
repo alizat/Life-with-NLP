@@ -6,10 +6,11 @@ https://data.mendeley.com/datasets/v524p5dhpj/2
 import pandas as pd
 import numpy as np
 import time
+import pickle
 
 import torch
-# from transformers import pipeline
-from sentence_transformers import SentenceTransformer
+from torch.utils.data import DataLoader
+from sentence_transformers import SentenceTransformer, InputExample, losses
 
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
@@ -39,15 +40,30 @@ data = data[data['text'].notna()]
 
 # Sample dataset for quicker experimentation
 print("\nSampling dataset...")
-data_sampled = data.sample(frac=1, random_state=42).reset_index(drop=True)      # Shuffle the dataset
-# data_sampled = data.sample(frac=0.1, random_state=42).reset_index(drop=True)  # 1% of the dataset
+data = data.sample(frac=1, random_state=42).reset_index(drop=True)      # Shuffle the dataset
+# data = data.sample(frac=0.1, random_state=42).reset_index(drop=True)  # 10% of the dataset
 
 
 # Display dataset info
-print(f"  Number of documents: {len(data_sampled)}")
+print(f"  Number of documents: {len(data)}")
 print("  Class distribution:  (0: culture, 1: diverse, 2: economy, 3: politic, 4: sport)")
-print(data_sampled.value_counts("label"))
+print(data.value_counts("label"))
 # data.value_counts("label").sort_index().plot(kind="bar", title="Class Distribution")
+
+
+# Train-validation-test split (70-15-15)
+print("\nSplitting dataset into train, validation and test sets...")
+X_train, X_temp, y_train, y_temp = train_test_split(data["text"].tolist(), data["label"].tolist(), test_size=0.3, random_state=42)
+X_valid, X_test, y_valid, y_test = train_test_split(X_temp,                y_temp,                 test_size=0.5, random_state=42)
+print(f"  Training set size:   {len(X_train)}")
+print(f"  Validation set size: {len(X_valid)}")
+print(f"  Test set size:       {len(X_test)}")
+
+
+# keep a copy of the texts before obtaining embeddings
+X_train_base = X_train.copy()
+X_valid_base = X_valid.copy()
+X_test_base  = X_test.copy()
 
 
 # Get embeddings (feature matrix)
@@ -55,19 +71,12 @@ print("\nExtracting embeddings...")
 start_time = time.time()
 print(f"  Using model: {model_name}")
 extractor = SentenceTransformer(model_name, trust_remote_code=True, device=device)
-embeddings = extractor.encode(data_sampled["text"].tolist())
-print(f"  Embeddings shape: {embeddings.shape}")
+X_train = extractor.encode(X_train)
+X_valid = extractor.encode(X_valid)
+X_test  = extractor.encode(X_test)
+print(f"  Embeddings shape (train): {X_train.shape}")
 end_time = time.time()
 print(f"  Time elapsed: {end_time - start_time:.2f} seconds")
-
-
-# Train-validation-test split (70-15-15)
-print("\nSplitting dataset into train, validation and test sets...")
-X_train, X_temp, y_train, y_temp = train_test_split(embeddings, data_sampled["label"].tolist(), test_size=0.3, random_state=42)
-X_valid, X_test, y_valid, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
-print(f"  Training set size: {len(X_train)}")
-print(f"  Validation set size: {len(X_valid)}")
-print(f"  Test set size: {len(X_test)}")
 
 
 print('\n=============================================')
@@ -123,7 +132,7 @@ print('Params:', params)
 dtrain = xgb.DMatrix(X_train, label=y_train)
 dvalid = xgb.DMatrix(X_valid, label=y_valid)
 dtest  = xgb.DMatrix(X_test,  label=y_test)
-model = xgb.train(
+xgb_classifier = xgb.train(
     params,
     dtrain,
     num_boost_round = 2000,
@@ -131,12 +140,59 @@ model = xgb.train(
     early_stopping_rounds=20,
     verbose_eval=100
 )
-y_pred_prob = model.predict(xgb.DMatrix(X_test))
-y_pred = np.argmax(y_pred_prob, axis=1)
-accuracy = accuracy_score(y_test, y_pred)
-print("Accuracy: %.2f%%" % (accuracy * 100.0))
+y_pred_prob = xgb_classifier.predict(xgb.DMatrix(X_test))
+y_pred_xgb = np.argmax(y_pred_prob, axis=1)
+accuracy_xgb = accuracy_score(y_test, y_pred_xgb)
+print(f"  Accuracy: {accuracy_xgb * 100:.2f}%")
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred_xgb))
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred_xgb))
+print('\n-------')
 
 
 # print('\n=============================================')
-# print('\n*** Document Classification with Fine-tuned Model ***')
+# print('\n*** Document Classification with Fine-tuned SentenceTransformer (model2vec) Model ***')
+# print('\n-------')
+
+
+# print("\nFine-tuning SentenceTransformer (model2vec-style model)...")
+# model = extractor
+# train_examples = [InputExample(texts=[x, x], label=y) for x, y in zip(X_train_base, y_train)]  # x: str, y: int
+# train_dataloader = DataLoader(train_examples, shuffle=True, batch_size=16)
+# train_loss = losses.SoftmaxLoss(  # classification-compatible loss (e.g., SoftmaxLoss)
+#     model=model,
+#     sentence_embedding_dimension=model.get_sentence_embedding_dimension(),
+#     num_labels=len(set(y_train))
+# )
+# model.fit(  # fine-tune
+#     train_objectives=[(train_dataloader, train_loss)],
+#     epochs=3,
+#     warmup_steps=100,
+#     output_path="./fine_tuned_sentence_transformer"  # save model
+# )
+# with open('fine_tuned_sentence_transformer/softmax_loss.pkl', 'wb') as file:
+#     pickle.dump(train_loss, file)  # save classification head
+
+
+# # load saved model and classification head
+# model_path = "./fine_tuned_sentence_transformer"
+# model = SentenceTransformer(model_path)
+# model.eval()
+# with open('fine_tuned_sentence_transformer/softmax_loss.pkl', 'rb') as file:
+#     train_loss = pickle.load(file)
+
+
+# # predict
+# embeddings = model.encode(X_test_base, convert_to_tensor=True, show_progress_bar=True)  # get embeddings
+# with torch.no_grad():
+#     logits = train_loss.classifier(embeddings)     # shape: [N, num_labels]
+#     probs = torch.nn.functional.softmax(logits, dim=-1)
+#     y_preds_ftst = torch.argmax(probs, dim=-1).cpu().numpy()
+# accuracy_xgb = accuracy_score(y_test, y_preds_ftst)
+# print(f"  Accuracy: {accuracy_xgb * 100:.2f}%")
+# print("\nClassification Report:")
+# print(classification_report(y_test, y_preds_ftst))
+# print("Confusion Matrix:")
+# print(confusion_matrix(y_test, y_preds_ftst))
 # print('\n-------')

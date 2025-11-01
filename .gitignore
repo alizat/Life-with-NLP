@@ -2,3 +2,5 @@
 .ipynb_checkpoints
 .env
 .venv
+fine_tuned_*
+*.csv
